@@ -1,93 +1,104 @@
-# Rocky Linux 9 RKE2 Cluster Deployment on Proxmox 9.1.x
+# 🏔️ Proxmox Infrastructure: Rocky Linux 9 & RKE2 Foundation
 
-This document outlines the deployment of a 13-node high-availability Kubernetes (RKE2) foundation on Rocky Linux 9 using Terraform and the **bpg/proxmox** provider.
+> [!IMPORTANT]
+> This guide documents the automated deployment of a **13-node High-Availability RKE2 cluster** on Proxmox 8.1.x/9.1.x. It utilizes **Terraform** for infrastructure orchestration and **Cloud-Init** for immediate post-boot configuration.
 
-## 1. Cluster Architecture
-The cluster is divided into two distinct roles with differential resource allocation:
+---
 
-| Role | Nodes | CPUs | RAM | Storage | Static IP Range | Datastore |
+## 📑 Table of Contents
+1.  [Cluster Architecture Overview](#-cluster-architecture-overview)
+2.  [Technical Stack](#-technical-stack)
+3.  [Provisioning Logic (Cloud-Init)](#-provisioning-logic-cloud-init)
+4.  [Operational Guide (Terraform)](#-operational-guide-terraform)
+5.  [Post-Deployment (Ansible)](#-post-deployment-ansible)
+6.  [File Manifest & Project Structure](#-file-manifest--project-structure)
+
+---
+
+## 🏢 Cluster Architecture Overview
+The foundation is built using a two-tier architecture, optimizing resources for control plane stability and worker node performance.
+
+### 📐 Node Resource Allocation
+| Node Role | Count | CPU (Cores) | RAM (GB) | Storage (NVMe/ZFS) | IP Range | Datastore |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Control Plane** | `rke2-cp-[1-3]` | 4 | 4 GB | 100 GB | `172.16.50.226 - 228` | `RAIDZ-ZFS` |
-| **Worker Node** | `rke2-worker-[1-10]` | 8 | 16 GB | 100 GB | `172.16.50.229 - 238` | `RAIDZ-ZFS` |
+| **Control Plane** | 3 | 4 | 4 | 100 GB | `172.16.50.226 - .228` | `RAIDZ-ZFS` |
+| **Worker Nodes** | 10 | 8 | 16 | 100 GB | `172.16.50.229 - .238` | `RAIDZ-ZFS` |
 
 ---
 
-## 2. Technical Stack
-*   **Infrastructure as Code**: Terraform v1.14.8+
-*   **Provider**: `bpg/proxmox` (v0.66.0+)
-*   **Base Image**: Rocky Linux 9 GenericCloud-LVM (QCOW2)
-*   **Cloud-Init**: Custom YAML snippets for automated provisioning
-*   **Post-Provisioning**: Ansible-ready inventory (`inventory.yml`)
+## 🛠️ Technical Stack
+*   **Infrastructure as Code (IaC)**: [Terraform v1.14.8+](https://www.terraform.io/)
+*   **Proxmox Provider**: [`bpg/proxmox` (v0.66.0+)](https://registry.terraform.io/providers/bpg/proxmox/latest)
+*   **Operating System**: Rocky Linux 9 (GenericCloud-LVM QCOW2)
+*   **Automated Provisioning**: Cloud-Init YAML Fragments
+*   **Configuration Management**: Ansible-ready inventory generation
 
 ---
 
-## 3. Provisioning Logic (Cloud-Init)
-The VMs are customized on first boot via `main.tf` to handle specific environment requirements:
+## 📜 Provisioning Logic (Cloud-Init)
+To ensure nodes are "ready-to-join" immediately after boot, the following configurations are injected via Cloud-Init.
 
-### System Hardening & Settings
-*   **SELinux**: Disabled via `sed` and `setenforce 0` to support RKE2 requirements.
-*   **QEMU Guest Agent**: Installed and enabled to report IP/Status back to Proxmox.
-*   **Time & Locale**: 
-    *   Timezone: `Asia/Kolkata`
-    *   24-Hour Format: Forced using `localectl set-locale LC_TIME=en_GB.UTF-8`.
-*   **Utility Packages**: Installed `vim`, `git`, `wget`, `chrony`, and `net-tools` by default.
+### 🛡️ System Hardening
+| Feature | Action | Rationale |
+| :--- | :--- | :--- |
+| **SELinux** | `Disabled` | Required for RKE2 binary compatibility and performance. |
+| **Firewalld** | `Disabled` | Managed at the network/ingress level. |
+| **Swap** | `Disabled` | Mandatory for Kubelet stability. |
 
-### LVM Disk Expansion (The 50GB Fix)
-Since the Rocky Linux GenericCloud-LVM image defaults to a smaller partition size, we implemented an automated expansion in the `runcmd` block:
-1.  **Grow Partition**: `growpart /dev/sda 4`
-2.  **Resize PV**: `pvresize /dev/sda4`
-3.  **Extend LV**: `lvextend -l +100%FREE /dev/mapper/rocky-lvroot`
-4.  **Resize XFS**: `xfs_growfs /`
+### ⌛ Localization & Performance
+*   **Timezone**: `Asia/Kolkata`
+*   **Format**: Forced 24-hour clock via `LC_TIME=en_GB.UTF-8`.
+*   **Guest Agent**: Pre-installed `qemu-guest-agent` for Proxmox telemetry.
+*   **Time Sync**: `chrony` enabled on first-boot.
+
+### 💾 LVM Disk Expansion (Dynamic Resize)
+Since standard Cloud-Images often default to 2GB-8GB of used space regardless of disk size, we implement an automated **LVM expansion** in the `runcmd` block:
+1.  **Grow Partition**: Resize the GPT/MBR partition.
+2.  **Physical Volume**: Expand the PV to fill the partition.
+3.  **Logical Volume**: Extend the root LV to 100% of available space.
+4.  **Filesystem**: Online resize of the XFS partition.
 
 ---
 
-## 4. Operational Guide
+## 🔌 Operational Guide (Terraform)
 
-### Initial Deployment
-To provision the entire cluster:
+### 🚀 Initial Cluster Deployment
+Provision all 13 nodes (3 CP + 10 Workers) in a single operation:
 ```bash
 terraform init
 terraform apply -auto-approve
 ```
 
-### Dynamic Scaling (Workers or Control Plane)
-You can now scale or destroy specific roles dynamically using variables. This is the **preferred way** to handle role-specific operations:
+### 📈 Dynamic Scaling
+The infrastructure is designed for elastic scaling using Terraform variables. Use these commands to adjust node counts without affecting existing state.
 
-*   **Destroy ONLY Worker nodes** (while keeping CP):
+*   **Scale Up/Down Workers**:
+    ```bash
+    terraform apply -var="worker_node_count=15" -auto-approve
+    ```
+*   **Remove All Workers** (Maintenance Mode):
     ```bash
     terraform apply -var="worker_node_count=0" -auto-approve
     ```
-*   **Deploy ONLY Workers** (if they were deleted):
+*   **Targeted Re-deployment**:
     ```bash
-    terraform apply -var="worker_node_count=10" -auto-approve
-    ```
-*   **Destroy ONLY Control Plane nodes**:
-    ```bash
-    terraform apply -var="control_plane_count=0" -auto-approve
-    ```
-*   **Scale to a specific number** (e.g., 5 workers):
-    ```bash
-    terraform apply -var="worker_node_count=5" -auto-approve
+    terraform apply -target="proxmox_virtual_environment_vm.rke2_nodes[\"rke2-worker-1\"]"
     ```
 
-### Targeted Operations (Standard Terraform)
-To work strictly on a single specific node without affecting others:
-```bash
-terraform apply -target="proxmox_virtual_environment_vm.rke2_nodes[\"rke2-worker-1\"]"
-```
+---
 
-### Ansible Readiness
-An **`inventory.yml`** file has been generated with all 13 nodes for post-infrastructure configuration.
-**Verify connectivity:**
+## 🧪 Post-Deployment (Ansible)
+Terraform automatically generates a dynamic `inventory.yml` file upon completion.
+
+### 📡 Connectivity Test
 ```bash
 ansible -i inventory.yml all -m ping
 ```
-Option 1: Fix All 13 VMs at once via Ansible
-Since we already have the inventory.yml file ready, you can fix the disk space, 24h time, and hostname for all 13 VMs simultaneously without destroying them.
 
-Run this command from your terminal:
+### 🛠️ Batch Maintenance (Ad-hoc)
+If you need to apply updates or specific fixes across all 13 nodes simultaneously:
 
-bash
+```bash
 ansible -i inventory.yml all -m shell -a "
   localectl set-locale LC_TIME=en_GB.UTF-8;
   growpart /dev/sda 4;
@@ -96,25 +107,20 @@ ansible -i inventory.yml all -m shell -a "
   xfs_growfs /;
   hostnamectl set-hostname {{ inventory_hostname }}
 " --become
-Option 2: Individual Fix (Manual)
-If you'd like to do it manually on each VM, run these inside the SSH session:
-
-bash
-# Set 24h format
-sudo localectl set-locale LC_TIME=en_GB.UTF-8
-# Grow the disk space
-sudo growpart /dev/sda 4
-sudo pvresize /dev/sda4
-sudo lvextend -l +100%FREE /dev/mapper/rocky-lvroot
-sudo xfs_growfs /
-# Set the hostname
-sudo hostnamectl set-hostname $(curl -s http://169.254.169.254/latest/meta-data/local-hostname || echo rke2-node)
+```
 
 ---
 
-## 5. File Manifest
-*   **[main.tf](file:///Users/kreddy/Documents/Proxmox-automation/main.tf)**: Resource definitions and Cloud-Init YAML.
-*   **[providers.tf](file:///Users/kreddy/Documents/Proxmox-automation/providers.tf)**: Proxmox auth and provider settings.
-*   **[variables.tf](file:///Users/kreddy/Documents/Proxmox-automation/variables.tf)**: Environment variables and node specs.
-*   **[terraform.tfvars](file:///Users/kreddy/Documents/Proxmox-automation/terraform.tfvars)**: Your specific credentials and environment secrets.
-*   **[inventory.yml](file:///Users/kreddy/Documents/Proxmox-automation/inventory.yml)**: Ansible inventory.
+## 📁 File Manifest & Project Structure
+
+| File | Purpose |
+| :--- | :--- |
+| **[`main.tf`](file:///Users/kreddy/Documents/Proxmox-automation/main.tf)** | Primary resource definitions and Cloud-Init YAML logic. |
+| **[`variables.tf`](file:///Users/kreddy/Documents/Proxmox-automation/variables.tf)** | Schema for cluster size, IPs, and hardware specs. |
+| **[`providers.tf`](file:///Users/kreddy/Documents/Proxmox-automation/providers.tf)** | Proxmox API authentication and provider constraints. |
+| **[`terraform.tfvars`](file:///Users/kreddy/Documents/Proxmox-automation/terraform.tfvars)** | Environment-specific secrets and credential mappings. |
+| **[`inventory.yml`](file:///Users/kreddy/Documents/Proxmox-automation/inventory.yml)** | Generated Ansible inventory for configuration management. |
+
+---
+> [!TIP]
+> **Proxmox Console Access**: While Cloud-Init handles the heavy lifting, you can monitor the boot process and disk expansion via the Proxmox "NoVNC" console for each VM.
