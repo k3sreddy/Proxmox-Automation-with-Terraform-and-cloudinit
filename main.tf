@@ -70,8 +70,8 @@ users:
       - ${var.ssh_public_key}
 chpasswd:
   list: |
-    root:unroot
-    rocky:unroot
+    root:xxxxx
+    rocky:xxxxx
   expire: False
   
 ssh_pwauth: true
